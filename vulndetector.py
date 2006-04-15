@@ -1,22 +1,37 @@
 #!/usr/bin/python
 
-# VulnDetector Version 0.0.1pa
+#
+# VulnDetector - Version 0.0.2pa
+#
 # Author: Brad Cable
-# License: GPL Version 2
+# Email: brad@bcable.net
+# License: Modified BSD
+# License Details:
+# http://bcable.net/license.php
+#
 
+
+## basic config - these need to be changed depending on the site to be scanned ##
+
+mode="scan"                          # "scan" or "harvest"
 
 ## basic config - these need to be changed depending on the site to be scanned ##
 
 site="http://www.site.com/"          # URL to tree/scan
 domains=[".site.com",".site2.com"]   # whitelist of domains to scan, with a "." infront, it matches all subdomains as well
 pagetype="php"                       # type of code used on the site being scanned ("php" or "asp")
+ignorepage_reg="https"               # regular expression based ignoring of URLs
 
 # log locations, all logs are stored at [the current directory]/logs/LOGFILE
-vulnlogfile="gfqlog"                 # file to log all detected vulnerabilities as they are encountered
-urllogfile="gfqurllog"               # file to log all urls fetched as they are fetched
-reportfile="gfqreport"               # at the end of the scan, the detected vulnerabilities are compiled into a neat list, and logged to this file
+vulnlogfile="logfile"                # file to log all detected vulnerabilities as they are encountered
+urllogfile="urllog"                  # file to log all urls fetched as they are fetched
+harvlogfile="harvlog"                # file to log all harvested REGEXPS as they are fetched
+reportfile="scanreport"              # at the end of the scan, the detected vulnerabilities are compiled into a neat list, and logged to this file
 usecookies=True                      # whether or not to send a cookie header value each time (True or False)
 cookies=""                           # if usecookies is True, then 
+
+# regular expression to compare for information harvesting
+harvest_regexp="([0-9a-z\-_\.]+\@[0-9a-z\-_\.]+\.[0-9a-z\-_\.]+)"
 
 ## end basic config ##
 
@@ -29,16 +44,18 @@ cookies=""                           # if usecookies is True, then
 xssscan=True              # scan for XSS vulns (True or False)
 sqliscan=True             # scan for SQLI vulns (True or False)
 
+
+
 checklevel=1              # checklevel:
                           #   1 = Silent SQL, Silent XSS
                           #   2 = Silent SQL, Silent XSS when possible (semi-silent when not)
                           #   3 = BLAST THE SITE! (AKA, non Silent SQL, non Silent XSS, causes tons of MySQL Errors
                           #                        on the site and could possibly flood someone's admin email)
 
-levels=7                  # levels deep to tree the site (I recommend 6-8; 6 is shorter, and fairly thorough, while 8 is just plain crazy long and a little too thorough)
+levels=8                  # levels deep to tree the site (I recommend 6-8; 6 is shorter, and fairly thorough, while 8 is just plain crazy long and a little too thorough)
 ignore_subdomain=True     # ignore subdomains for HTTP Host field and other places (should leave as True)
 
-scanlimit=5               # times to scan the same URL with different query strings,
+scanlimit=10               # times to scan the same URL with different query strings,
                           # "bob.php?id=1" and "bob.php?id=2" count as two scans,
                           # and until scanlimit is hit, it will continue to check
                           # vulnerabilities on that URL
@@ -200,6 +217,8 @@ def getattrval(body,attr):
 # function to retreive a page based on input
 def getpage(url,dheaders=1,redir=0,realpage=0,poststring="",exceptions=0):
 
+	if sre.search(ignorepage_reg,url)!=None: return
+
 	# function to recurse and try getpage() again with new values
 	def recurse(exceptions):
 
@@ -207,9 +226,11 @@ def getpage(url,dheaders=1,redir=0,realpage=0,poststring="",exceptions=0):
 		exceptions+=1
 
 		if exceptions<=6: return getpage(url,dheaders,redir,realpage,poststring,exceptions)
-		else:
-			print "Too many recursions, skipping..."
-			return
+
+	if exceptions>0: print "EXCEPTIONS:",exceptions
+	if exceptions>6:
+		print "Too many recursions, skipping..."
+		return
 
 
 	global usecookies,urllogfile,debug,ignorefileext
@@ -241,6 +262,7 @@ def getpage(url,dheaders=1,redir=0,realpage=0,poststring="",exceptions=0):
 			global cookies
 			out+="Cookie: "+cookies+"\n"
 		if poststring!="":
+			poststring=str(poststring)
 			out+="Content-Type: application/x-www-form-urlencoded\n"
 			out+="Content-Length: "+str(len(poststring))
 			out+="\n\n"+poststring+"\n"
@@ -284,7 +306,8 @@ def getpage(url,dheaders=1,redir=0,realpage=0,poststring="",exceptions=0):
 					print "OLD:",url
 					print "NEW:",chunk.lower()
 					print "REDIR:",locpage
-					return getpage(locpage,redir=redir,realpage=realpage)
+					exceptions+=1
+					return getpage(locpage,redir,realpage,"",exceptions)
 			if realpage==1:
 				sock.close()
 				return
@@ -793,12 +816,24 @@ def dispvulns(vulns,url):
 	filestuff("logs/"+vulnlogfile,output+"\n")
 	print output
 
+
+def harvest_page(url,body):
+	global harvest_regexp,harvlogfile
+	print "OMG HARVESTING ROFL"
+	list=sre.findall(harvest_regexp,body)
+	print url+":",str(list)
+	if len(list)>0:
+		fp=open("logs/"+harvlogfile,"a")
+		fp.write(url+": "+str(list)+"\n\n")
+		fp.close()
+	print "DONE WITH",url
+
 treeglob=1
 
 # function to tree a site and initiate vulnerability checks on the pages found
 def treepages(url,level):
 
-	global treeglob,urlfields,postfields,treedurls,levels,server,vulnlogfile,scanlimit,ignorefileext
+	global treeglob,urlfields,postfields,treedurls,levels,server,vulnlogfile,scanlimit,ignorefileext,mode
 	print ">>>>>>>>",level,"<<<<<<<<"
 
 	print " ---> "+url
@@ -807,6 +842,8 @@ def treepages(url,level):
 	if listempty(pageinfo): return
 
 	body=pageinfo[1].lower()
+
+	if mode=="harvest": harvest_page(url,body)
 
 	print "AA"
 
@@ -879,8 +916,9 @@ def treepages(url,level):
 			postscan=1
 
 		if postscan==1:
-			vulns=checkvars(actionurl,poststring)
-			if not listempty(vulns): dispvulns(vulns,actionurl)
+			if mode=="scan":
+				vulns=checkvars(actionurl,poststring)
+				if not listempty(vulns): dispvulns(vulns,actionurl)
 
 	print "BB"
 
@@ -918,8 +956,9 @@ def treepages(url,level):
 			nqurl=theurl
 
 		if getscan==1:
-			vulns=checkvars(theurl)
-			if not listempty(vulns): dispvulns(vulns,theurl)
+			if mode=="scan":
+				vulns=checkvars(theurl)
+				if not listempty(vulns): dispvulns(vulns,theurl)
 		tree=treeglob
 		if treedurls.has_key(nqurl):
 			if treedurls[nqurl].count(theurl)==0 and len(treedurls[nqurl])<=scanlimit:
@@ -930,12 +969,12 @@ def treepages(url,level):
 		if tree==1 and level<levels:
 			realurl=getpage(theurl,realpage=1)
 			if theurl!=realurl and realurl!=None:
-				body+=' href="'+realurl+'" '
+				body+=' href="'+str(realurl)+'" '
 			print "treeee"
 			try: treepages(theurl,level+1)
 			except KeyboardInterrupt:
-				treeglob=0
-				print "TREEGLOB CHANGED TO ZERO"
+				#treeglob=0
+				print "TREEGLOB NOT CHANGED" #CHANGED TO ZERO"
 				treepages(theurl,level+1)
 
 
@@ -987,52 +1026,53 @@ print timeout
 
 ## write report ##
 
-urls=reportvar.keys()
-urls.sort()
-if not listempty(urls):
+if mode=="scan":
+	urls=reportvar.keys()
+	urls.sort()
+	if not listempty(urls):
 
-	fp=open("logs/"+reportfile,"w")
+		fp=open("logs/"+reportfile,"w")
 
-	for i in range(len(urls)):
+		for i in range(len(urls)):
 
-		fp.write(urls[i]+":\n")
-		reporturl=reportvar[urls[i]]
-		if not listempty(reporturl):
+			fp.write(urls[i]+":\n")
+			reporturl=reportvar[urls[i]]
+			if not listempty(reporturl):
 
-			if not listempty(reporturl[0]):
-				if not listempty(reporturl[0][0]) or not listempty(reporturl[0][1]):
-					reporturl[0][0].sort()
-					reporturl[0][1].sort()
+				if not listempty(reporturl[0]):
+					if not listempty(reporturl[0][0]) or not listempty(reporturl[0][1]):
+						reporturl[0][0].sort()
+						reporturl[0][1].sort()
 
-					fp.write(indent+"GET: ")
-					if not listempty(reporturl[0][0]):
-						fp.write("SQLI - "+str(reporturl[0][0]))
+						fp.write(indent+"GET: ")
+						if not listempty(reporturl[0][0]):
+							fp.write("SQLI - "+str(reporturl[0][0]))
+							if not listempty(reporturl[0][1]):
+								fp.write(" | ")
 						if not listempty(reporturl[0][1]):
-							fp.write(" | ")
-					if not listempty(reporturl[0][1]):
-						fp.write("XSS - "+str(reporturl[0][1]))
-					fp.write("\n")
+							fp.write("XSS - "+str(reporturl[0][1]))
+						fp.write("\n")
 
-			if not listempty(reporturl[1]):
-				if not listempty(reporturl[1][0]) or not listempty(reporturl[1][1]):
-					reporturl[1][0].sort()
-					reporturl[1][1].sort()
+				if not listempty(reporturl[1]):
+					if not listempty(reporturl[1][0]) or not listempty(reporturl[1][1]):
+						reporturl[1][0].sort()
+						reporturl[1][1].sort()
 
-					fp.write(indent+"POST: ")
-					if not listempty(reporturl[1][0]):
-						fp.write("SQLI - "+str(reporturl[1][0]))
+						fp.write(indent+"POST: ")
+						if not listempty(reporturl[1][0]):
+							fp.write("SQLI - "+str(reporturl[1][0]))
+							if not listempty(reporturl[1][1]):
+								fp.write(" | ")
 						if not listempty(reporturl[1][1]):
-							fp.write(" | ")
-					if not listempty(reporturl[1][1]):
-						fp.write("XSS - "+str(reporturl[1][1]))
-					fp.write("\n")
+							fp.write("XSS - "+str(reporturl[1][1]))
+						fp.write("\n")
 
 
-			fp.write("\n")
+				fp.write("\n")
 
-	fp.write("\n"+timeout+"\n")
+		fp.write("\n"+timeout+"\n")
 
-	fp.close()
+		fp.close()
 
 print "Report Written: "+reportfile
 
